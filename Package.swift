@@ -29,7 +29,6 @@ let package = Package(
     ),
   ],
   dependencies: [
-    .package(url: "https://github.com/groue/GRDB.swift", from: "7.4.0"),
     .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
     .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.5.0"),
     .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.3.0"),
@@ -47,7 +46,7 @@ let package = Package(
       name: "SharingGRDBCore",
       dependencies: [
         "StructuredQueriesGRDBCore",
-        .product(name: "GRDB", package: "GRDB.swift"),
+        .target(name: "GRDB"),
         .product(name: "Sharing", package: "swift-sharing"),
       ]
     ),
@@ -62,7 +61,7 @@ let package = Package(
     .target(
       name: "StructuredQueriesGRDBCore",
       dependencies: [
-        .product(name: "GRDB", package: "GRDB.swift"),
+        .target(name: "GRDB"),
         .product(name: "Dependencies", package: "swift-dependencies"),
         .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
         .product(name: "StructuredQueriesCore", package: "swift-structured-queries"),
@@ -83,6 +82,10 @@ let package = Package(
         .product(name: "StructuredQueries", package: "swift-structured-queries"),
       ]
     ),
+    .binaryTarget(
+      name: "GRDB",
+      path: "./Sources/GRDB.xcframework"
+    )
   ],
   swiftLanguageModes: [.v6]
 )
@@ -98,7 +101,9 @@ let swiftSettings: [SwiftSetting] = [
 ]
 
 for index in package.targets.indices {
-  package.targets[index].swiftSettings = swiftSettings
+  if package.targets[index].type != .binary {
+    package.targets[index].swiftSettings = swiftSettings
+  }
 }
 
 #if !os(Windows)

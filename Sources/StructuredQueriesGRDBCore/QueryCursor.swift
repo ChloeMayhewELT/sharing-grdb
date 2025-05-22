@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import GRDBSQLite
 import StructuredQueriesCore
 
 /// A cursor of a structured query.

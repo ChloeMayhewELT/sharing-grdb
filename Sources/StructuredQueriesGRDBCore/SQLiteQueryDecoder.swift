@@ -1,4 +1,4 @@
-import GRDBSQLite
+import GRDB
 import StructuredQueriesCore
 
 @usableFromInline
