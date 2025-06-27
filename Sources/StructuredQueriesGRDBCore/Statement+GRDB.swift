@@ -173,7 +173,7 @@ extension SelectStatement where QueryValue == (), Joins == () {
   @_documentation(visibility: private)
   @inlinable
   public func fetchOne(_ db: Database) throws -> From.QueryOutput? {
-    try fetchCursor(db).next()
+    try asSelect().limit(1).fetchCursor(db).next()
   }
 
   /// Returns a cursor to all values fetched from the database.
@@ -212,7 +212,7 @@ extension SelectStatement where QueryValue == () {
     _ db: Database
   ) throws -> (From.QueryOutput, repeat (each J).QueryOutput)?
   where Joins == (repeat each J) {
-    try fetchCursor(db).next()
+    try asSelect().limit(1).fetchCursor(db).next()
   }
 
   /// Returns a cursor to all values fetched from the database.

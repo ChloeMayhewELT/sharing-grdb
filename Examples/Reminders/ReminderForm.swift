@@ -4,22 +4,18 @@ import SwiftUI
 
 struct ReminderFormView: View {
   @FetchAll(RemindersList.order(by: \.title)) var remindersLists
+  @FetchOne var remindersList: RemindersList
 
   @State var isPresentingTagsPopover = false
-  @State var remindersList: RemindersList
   @State var reminder: Reminder.Draft
   @State var selectedTags: [Tag] = []
 
   @Dependency(\.defaultDatabase) private var database
   @Environment(\.dismiss) var dismiss
 
-  init(existingReminder: Reminder? = nil, remindersList: RemindersList) {
-    self.remindersList = remindersList
-    if let existingReminder {
-      reminder = Reminder.Draft(existingReminder)
-    } else {
-      reminder = Reminder.Draft(remindersListID: remindersList.id)
-    }
+  init(reminder: Reminder.Draft, remindersList: RemindersList) {
+    _remindersList = FetchOne(wrappedValue: remindersList, RemindersList.find(remindersList.id))
+    self.reminder = reminder
   }
 
   var body: some View {
@@ -109,11 +105,12 @@ struct ReminderFormView: View {
           }
         }
 
-        Picker(selection: $remindersList) {
+        Picker(selection: $reminder.remindersListID) {
           ForEach(remindersLists) { remindersList in
             Text(remindersList.title)
               .tag(remindersList)
               .buttonStyle(.plain)
+              .tag(remindersList.id)
           }
         } label: {
           HStack {
@@ -123,8 +120,10 @@ struct ReminderFormView: View {
             Text("List")
           }
         }
-        .onChange(of: remindersList) {
-          reminder.remindersListID = remindersList.id
+        .task(id: reminder.remindersListID) {
+          await withErrorReporting {
+            try await $remindersList.load(RemindersList.find(reminder.remindersListID))
+          }
         }
       }
     }
@@ -171,16 +170,18 @@ struct ReminderFormView: View {
   private func saveButtonTapped() {
     withErrorReporting {
       try database.write { db in
-        let reminderID = try Reminder.upsert(reminder).returning(\.id).fetchOne(db)!
+        let reminderID = try Reminder.upsert { reminder }
+          .returning(\.id)
+          .fetchOne(db)!
         try ReminderTag
           .where { $0.reminderID.eq(reminderID) }
           .delete()
           .execute(db)
-        try ReminderTag.insert(
+        try ReminderTag.insert {
           selectedTags.map { tag in
-            ReminderTag(reminderID: reminderID, tagID: tag.id)
+            ReminderTag.Draft(reminderID: reminderID, tagID: tag.id)
           }
-        )
+        }
         .execute(db)
       }
     }
@@ -215,7 +216,7 @@ struct ReminderFormPreview: PreviewProvider {
       }
     }
     NavigationStack {
-      ReminderFormView(existingReminder: reminder, remindersList: remindersList)
+      ReminderFormView(reminder: Reminder.Draft(reminder), remindersList: remindersList)
         .navigationTitle("Detail")
     }
   }
