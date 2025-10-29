@@ -1,11 +1,11 @@
-import SharingGRDB
+import SQLiteData
 import SwiftUI
 
 struct SwiftUIDemo: SwiftUICaseStudy {
   let readMe = """
-    This demonstrates how to use the `fetchAll` and `fetchOne` queries directly in a SwiftUI view. \
-    The tools listen for changes in the database so that when the table changes it automatically \
-    updates state and re-renders the view.
+    This demonstrates how to use the `@FetchAll` and `@FetchOne` queries directly in a SwiftUI \
+    view. The tools listen for changes in the database so that when the table changes it \
+    automatically updates state and re-renders the view.
 
     You can also delete rows by swiping on a row and tapping the "Delete" button.
     """
@@ -44,8 +44,10 @@ struct SwiftUIDemo: SwiftUICaseStudy {
             as: UTF8.self
           )
           try await database.write { db in
-            try Fact.insert(Fact.Draft(body: fact))
-              .execute(db)
+            try Fact.insert {
+              Fact.Draft(body: fact)
+            }
+            .execute(db)
           }
         }
       } catch {}
@@ -54,7 +56,7 @@ struct SwiftUIDemo: SwiftUICaseStudy {
 }
 
 @Table
-private struct Fact: Identifiable {
+nonisolated private struct Fact: Identifiable {
   let id: Int
   var body: String
 }
@@ -69,7 +71,7 @@ extension DatabaseWriter where Self == DatabaseQueue {
         CREATE TABLE "facts" (
           "id" INTEGER PRIMARY KEY AUTOINCREMENT,
           "body" TEXT NOT NULL
-        )
+        ) STRICT
         """
       )
       .execute(db)

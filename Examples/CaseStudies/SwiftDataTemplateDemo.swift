@@ -1,4 +1,4 @@
-import SharingGRDB
+import SQLiteData
 import SwiftUI
 
 struct SwiftDataTemplateView: SwiftUICaseStudy {
@@ -56,9 +56,8 @@ struct SwiftDataTemplateView: SwiftUICaseStudy {
 }
 
 @Table
-private struct Item: Identifiable {
+nonisolated private struct Item: Identifiable {
   let id: Int
-  @Column(as: Date.ISO8601Representation.self)
   var timestamp: Date
 }
 
@@ -72,7 +71,7 @@ extension DatabaseWriter where Self == DatabaseQueue {
         CREATE TABLE "items" (
           "id" INTEGER PRIMARY KEY AUTOINCREMENT,
           "timestamp" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
+        ) STRICT
         """
       )
       .execute(db)

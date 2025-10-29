@@ -1,9 +1,9 @@
-import SharingGRDB
+import SQLiteData
 import SwiftUI
 
 struct TransactionDemo: SwiftUICaseStudy {
   let readMe = """
-    This demonstrates how to use the `fetch` tool to perform multiple SQLite queries in a single \
+    This demonstrates how to use the `@Fetch` tool to perform multiple SQLite queries in a single \
     database transaction. If you need to fetch multiple pieces of data from the database that \
     all tend to change together, then performing those queries in a single transaction can be \
     more performant.
@@ -46,8 +46,10 @@ struct TransactionDemo: SwiftUICaseStudy {
             as: UTF8.self
           )
           try await database.write { db in
-            try Fact.insert(Fact.Draft(body: fact))
-              .execute(db)
+            try Fact.insert {
+              Fact.Draft(body: fact)
+            }
+            .execute(db)
           }
         }
       } catch {}
@@ -69,7 +71,7 @@ struct TransactionDemo: SwiftUICaseStudy {
 }
 
 @Table
-private struct Fact: Identifiable {
+nonisolated private struct Fact: Identifiable {
   static let databaseTableName = "facts"
   let id: Int
   var body: String
@@ -85,7 +87,7 @@ extension DatabaseWriter where Self == DatabaseQueue {
         CREATE TABLE "facts" (
           "id" INTEGER PRIMARY KEY AUTOINCREMENT,
           "body" TEXT NOT NULL
-        )
+        ) STRICT
         """
       )
       .execute(db)

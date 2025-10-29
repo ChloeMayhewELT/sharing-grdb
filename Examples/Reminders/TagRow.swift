@@ -1,4 +1,4 @@
-import SharingGRDB
+import SQLiteData
 import SwiftUI
 
 struct TagRow: View {
@@ -34,7 +34,7 @@ struct TagRow: View {
 #Preview {
   NavigationStack {
     List {
-      TagRow(tag: Tag(id: 1, title: "optional"))
+      TagRow(tag: Tag(title: "optional"))
     }
   }
 }

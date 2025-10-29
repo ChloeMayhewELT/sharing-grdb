@@ -1,9 +1,9 @@
-import SharingGRDB
+import SQLiteData
 import SwiftUI
 
 struct ObservableModelDemo: SwiftUICaseStudy {
   let readMe = """
-    This demonstrates how to use the `fetchAll` and `fetchOne` tools in an @Observable model. \
+    This demonstrates how to use the `@FetchAll` and `@FetchOne` tools in an `@Observable` model. \
     In SwiftUI, the `@Query` macro only works when installed directly in a SwiftUI view, and \
     cannot be used outside of views.
 
@@ -65,8 +65,10 @@ private class Model {
         as: UTF8.self
       )
       try await database.write { db in
-        try Fact.insert(Fact.Draft(body: fact))
-          .execute(db)
+        try Fact.insert {
+          Fact.Draft(body: fact)
+        }
+        .execute(db)
       }
     }
   }
@@ -85,7 +87,7 @@ private class Model {
 }
 
 @Table
-private struct Fact: Identifiable {
+nonisolated private struct Fact: Identifiable {
   let id: Int
   var body: String
 }
@@ -100,7 +102,7 @@ extension DatabaseWriter where Self == DatabaseQueue {
         CREATE TABLE "facts" (
           "id" INTEGER PRIMARY KEY AUTOINCREMENT,
           "body" TEXT NOT NULL
-        )
+        ) STRICT
         """
       )
       .execute(db)

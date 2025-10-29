@@ -88,9 +88,7 @@ final class RecordMeetingModel: HashableObject {
 
   private func startSpeechRecognition() async {
     do {
-      let speechTask = await speechClient.startTask(
-        request: SFSpeechAudioBufferRecognitionRequest()
-      )
+      let speechTask = await speechClient.startTask()
       for try await result in speechTask {
         transcript = result.bestTranscription.formattedString
       }
@@ -124,9 +122,9 @@ final class RecordMeetingModel: HashableObject {
     try? await clock.sleep(for: .seconds(0.4))
     await withErrorReporting {
       try await database.write { [now, syncUp, transcript] db in
-        try Meeting.insert(
+        try Meeting.insert {
           Meeting.Draft(date: now, syncUpID: syncUp.id, transcript: transcript)
-        )
+        }
         .execute(db)
       }
     }
@@ -376,11 +374,11 @@ struct MeetingFooterView: View {
   NavigationStack {
     RecordMeetingView(
       model: RecordMeetingModel(
-        syncUp: SyncUp(id: 1, seconds: 60, theme: .bubblegum, title: "Engineering"),
+        syncUp: SyncUp(id: UUID(1), seconds: 60, theme: .bubblegum, title: "Engineering"),
         attendees: [
-          Attendee(id: 1, name: "Blob", syncUpID: 1),
-          Attendee(id: 2, name: "Blob Jr", syncUpID: 1),
-          Attendee(id: 3, name: "Blob Sr", syncUpID: 1),
+          Attendee(id: UUID(2), name: "Blob", syncUpID: UUID(1)),
+          Attendee(id: UUID(3), name: "Blob Jr", syncUpID: UUID(1)),
+          Attendee(id: UUID(4), name: "Blob Sr", syncUpID: UUID(1)),
         ]
       )
     )

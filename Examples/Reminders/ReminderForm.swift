@@ -1,25 +1,21 @@
 import IssueReporting
-import SharingGRDB
+import SQLiteData
 import SwiftUI
 
 struct ReminderFormView: View {
   @FetchAll(RemindersList.order(by: \.title)) var remindersLists
+  @FetchOne var remindersList: RemindersList
 
   @State var isPresentingTagsPopover = false
-  @State var remindersList: RemindersList
   @State var reminder: Reminder.Draft
   @State var selectedTags: [Tag] = []
 
   @Dependency(\.defaultDatabase) private var database
   @Environment(\.dismiss) var dismiss
 
-  init(existingReminder: Reminder? = nil, remindersList: RemindersList) {
-    self.remindersList = remindersList
-    if let existingReminder {
-      reminder = Reminder.Draft(existingReminder)
-    } else {
-      reminder = Reminder.Draft(remindersListID: remindersList.id)
-    }
+  init(reminder: Reminder.Draft, remindersList: RemindersList) {
+    _remindersList = FetchOne(wrappedValue: remindersList, RemindersList.find(remindersList.id))
+    self.reminder = reminder
   }
 
   var body: some View {
@@ -95,11 +91,11 @@ struct ReminderFormView: View {
           }
         }
         Picker(selection: $reminder.priority) {
-          Text("None").tag(Priority?.none)
+          Text("None").tag(Reminder.Priority?.none)
           Divider()
-          Text("High").tag(Priority.high)
-          Text("Medium").tag(Priority.medium)
-          Text("Low").tag(Priority.low)
+          Text("High").tag(Reminder.Priority.high)
+          Text("Medium").tag(Reminder.Priority.medium)
+          Text("Low").tag(Reminder.Priority.low)
         } label: {
           HStack {
             Image(systemName: "exclamationmark.circle.fill")
@@ -109,11 +105,12 @@ struct ReminderFormView: View {
           }
         }
 
-        Picker(selection: $remindersList) {
+        Picker(selection: $reminder.remindersListID) {
           ForEach(remindersLists) { remindersList in
             Text(remindersList.title)
               .tag(remindersList)
               .buttonStyle(.plain)
+              .tag(remindersList.id)
           }
         } label: {
           HStack {
@@ -123,8 +120,10 @@ struct ReminderFormView: View {
             Text("List")
           }
         }
-        .onChange(of: remindersList) {
-          reminder.remindersListID = remindersList.id
+        .task(id: reminder.remindersListID) {
+          await withErrorReporting {
+            try await $remindersList.load(RemindersList.find(reminder.remindersListID))
+          }
         }
       }
     }
@@ -136,7 +135,7 @@ struct ReminderFormView: View {
         selectedTags = try await database.read { db in
           try Tag
             .order(by: \.title)
-            .join(ReminderTag.all) { $0.id.eq($1.tagID) }
+            .join(ReminderTag.all) { $0.primaryKey.eq($1.tagID) }
             .where { $1.reminderID.eq(reminderID) }
             .select { tag, _ in tag }
             .fetchAll(db)
@@ -171,16 +170,18 @@ struct ReminderFormView: View {
   private func saveButtonTapped() {
     withErrorReporting {
       try database.write { db in
-        let reminderID = try Reminder.upsert(reminder).returning(\.id).fetchOne(db)!
+        let reminderID = try Reminder.upsert { reminder }
+          .returning(\.id)
+          .fetchOne(db)!
         try ReminderTag
           .where { $0.reminderID.eq(reminderID) }
           .delete()
           .execute(db)
-        try ReminderTag.insert(
+        try ReminderTag.insert {
           selectedTags.map { tag in
-            ReminderTag(reminderID: reminderID, tagID: tag.id)
+            ReminderTag.Draft(reminderID: reminderID, tagID: tag.id)
           }
-        )
+        }
         .execute(db)
       }
     }
@@ -210,12 +211,12 @@ struct ReminderFormPreview: PreviewProvider {
         let remindersList = try RemindersList.all.fetchOne(db)!
         return (
           remindersList,
-          try Reminder.where { $0.remindersListID == remindersList.id }.fetchOne(db)!
+          try Reminder.where { $0.remindersListID.eq(remindersList.id) }.fetchOne(db)!
         )
       }
     }
     NavigationStack {
-      ReminderFormView(existingReminder: reminder, remindersList: remindersList)
+      ReminderFormView(reminder: Reminder.Draft(reminder), remindersList: remindersList)
         .navigationTitle("Detail")
     }
   }

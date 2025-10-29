@@ -1,97 +1,143 @@
+import Dependencies
 import Foundation
 import IssueReporting
 import OSLog
-import SharingGRDB
+import SQLiteData
 import SwiftUI
+import Synchronization
 
 @Table
-struct RemindersList: Hashable, Identifiable {
-  var id: Int
+nonisolated struct RemindersList: Hashable, Identifiable {
+  let id: UUID
   @Column(as: Color.HexRepresentation.self)
-  var color = Color(red: 0x4a / 255, green: 0x99 / 255, blue: 0xef / 255)
+  var color: Color = Self.defaultColor
   var position = 0
   var title = ""
+
+  static var defaultColor: Color { Color(red: 0x4a / 255, green: 0x99 / 255, blue: 0xef / 255) }
+  static var defaultTitle: String { "Personal" }
+}
+
+extension RemindersList.Draft: Identifiable {}
+
+@Table
+nonisolated struct RemindersListAsset: Hashable, Identifiable {
+  @Column(primaryKey: true)
+  let remindersListID: RemindersList.ID
+  var coverImage: Data?
+  var id: RemindersList.ID { remindersListID }
 }
 
 @Table
-struct Reminder: Equatable, Identifiable {
-  var id: Int
-  @Column(as: Date.ISO8601Representation?.self)
+nonisolated struct Reminder: Hashable, Identifiable {
+  let id: UUID
   var dueDate: Date?
-  var isCompleted = false
   var isFlagged = false
   var notes = ""
-  var priority: Priority?
-  var remindersListID: Int
   var position = 0
+  var priority: Priority?
+  var remindersListID: RemindersList.ID
+  var status: Status = .incomplete
   var title = ""
+  var isCompleted: Bool {
+    status != .incomplete
+  }
+  enum Priority: Int, QueryBindable {
+    case low = 1
+    case medium
+    case high
+  }
+  enum Status: Int, QueryBindable {
+    case completed = 1
+    case completing = 2
+    case incomplete = 0
+  }
+}
+extension Updates<Reminder> {
+  mutating func toggleStatus() {
+    self.status = Case(self.status)
+      .when(#bind(.incomplete), then: #bind(.completing))
+      .else(#bind(.incomplete))
+  }
+}
+
+extension Reminder.Draft: Identifiable {}
+
+@Table
+nonisolated struct Tag: Hashable, Identifiable {
+  @Column(primaryKey: true)
+  var title: String
+  var id: String { title }
 }
 
 extension Reminder {
   static let incomplete = Self.where { !$0.isCompleted }
-  static func searching(_ text: String) -> Where<Reminder> {
-    Self.where {
-      $0.title.collate(.nocase).contains(text)
-        || $0.notes.collate(.nocase).contains(text)
-    }
-  }
   static let withTags = group(by: \.id)
     .leftJoin(ReminderTag.all) { $0.id.eq($1.reminderID) }
-    .leftJoin(Tag.all) { $1.tagID.eq($2.id) }
+    .leftJoin(Tag.all) { $1.tagID.eq($2.primaryKey) }
 }
 
-extension Reminder.TableColumns {
+nonisolated extension Reminder.TableColumns {
+  var isCompleted: some QueryExpression<Bool> {
+    status.neq(Reminder.Status.incomplete)
+  }
   var isPastDue: some QueryExpression<Bool> {
-    !isCompleted && #sql("coalesce(date(\(dueDate)) < date('now'), 0)")
+    @Dependency(\.date.now) var now
+    return !isCompleted && #sql("coalesce(date(\(dueDate)) < date(\(now)), 0)")
   }
   var isToday: some QueryExpression<Bool> {
-    !isCompleted && #sql("coalesce(date(\(dueDate)) = date('now'), 0)")
+    @Dependency(\.date.now) var now
+    return !isCompleted && #sql("coalesce(date(\(dueDate)) = date(\(now)), 0)")
   }
   var isScheduled: some QueryExpression<Bool> {
     !isCompleted && dueDate.isNot(nil)
   }
-  var inlineNotes: some QueryExpression<String> {
-    notes.replace("\n", " ")
-  }
 }
 
-enum Priority: Int, QueryBindable {
-  case low = 1
-  case medium
-  case high
-}
-
-@Table
-struct Tag: Hashable, Identifiable {
-  var id: Int
-  var title = ""
-}
-
-extension Tag {
-  static let withReminders = group(by: \.id)
-    .leftJoin(ReminderTag.all) { $0.id.eq($1.tagID) }
+nonisolated extension Tag {
+  static let withReminders = group(by: \.primaryKey)
+    .leftJoin(ReminderTag.all) { $0.primaryKey.eq($1.tagID) }
     .leftJoin(Reminder.all) { $1.reminderID.eq($2.id) }
 }
 
-extension Tag.TableColumns {
-  var jsonNames: some QueryExpression<[String].JSONRepresentation> {
-    self.title.jsonGroupArray(filter: self.title.isNot(nil))
-  }
+@Table("remindersTags")
+nonisolated struct ReminderTag: Identifiable {
+  let id: UUID
+  let reminderID: Reminder.ID
+  let tagID: Tag.ID
 }
 
-@Table("remindersTags")
-struct ReminderTag: Hashable, Identifiable {
-  var reminderID: Reminder.ID
-  var tagID: Tag.ID
-  var id: Self { self }
+@Table
+struct ReminderText: FTS5 {
+  let rowid: Int
+  let title: String
+  let notes: String
+  let tags: String
+}
+
+extension DependencyValues {
+  mutating func bootstrapDatabase(syncEngineDelegate: (any SyncEngineDelegate)? = nil) throws {
+    defaultDatabase = try Reminders.appDatabase()
+    defaultSyncEngine = try SyncEngine(
+      for: defaultDatabase,
+      tables: RemindersList.self,
+      RemindersListAsset.self,
+      Reminder.self,
+      Tag.self,
+      ReminderTag.self,
+      delegate: syncEngineDelegate
+    )
+  }
 }
 
 func appDatabase() throws -> any DatabaseWriter {
   @Dependency(\.context) var context
-  let database: any DatabaseWriter
   var configuration = Configuration()
   configuration.foreignKeysEnabled = true
   configuration.prepareDatabase { db in
+    try db.attachMetadatabase()
+    db.add(function: $createDefaultRemindersList)
+    db.add(function: $handleReminderStatusUpdate)
     #if DEBUG
       db.trace(options: .profile) {
         if context == .live {
@@ -102,24 +148,36 @@ func appDatabase() throws -> any DatabaseWriter {
       }
     #endif
   }
-  if context == .live {
-    let path = URL.documentsDirectory.appending(component: "db.sqlite").path()
-    logger.info("open \(path)")
-    database = try DatabasePool(path: path, configuration: configuration)
-  } else {
-    database = try DatabaseQueue(configuration: configuration)
-  }
+  let database = try SQLiteData.defaultDatabase(configuration: configuration)
+  logger.debug(
+    """
+    App database:
+    open "\(database.path)"
+    """
+  )
   var migrator = DatabaseMigrator()
   #if DEBUG
     migrator.eraseDatabaseOnSchemaChange = true
   #endif
   migrator.registerMigration("Create initial tables") { db in
+    let defaultListColor = Color.HexRepresentation(queryOutput: RemindersList.defaultColor).hexValue
     try #sql(
       """
       CREATE TABLE "remindersLists" (
-        "id" INTEGER PRIMARY KEY AUTOINCREMENT,
-        "color" INTEGER NOT NULL DEFAULT \(raw: 0x4a99_ef00),
-        "title" TEXT NOT NULL
+        "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+        "color" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT \(raw: defaultListColor ?? 0),
+        "position" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 0,
+        "title" TEXT NOT NULL ON CONFLICT REPLACE DEFAULT ''
+      ) STRICT
+      """
+    )
+    .execute(db)
+    try #sql(
+      """
+      CREATE TABLE "remindersListAssets" (
+        "remindersListID" TEXT PRIMARY KEY NOT NULL 
+          REFERENCES "remindersLists"("id") ON DELETE CASCADE,
+        "coverImage" BLOB
       ) STRICT
       """
     )
@@ -127,16 +185,15 @@ func appDatabase() throws -> any DatabaseWriter {
     try #sql(
       """
       CREATE TABLE "reminders" (
-        "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
         "dueDate" TEXT,
-        "isCompleted" INTEGER NOT NULL DEFAULT 0,
-        "isFlagged" INTEGER NOT NULL DEFAULT 0,
-        "notes" TEXT,
+        "isFlagged" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 0,
+        "notes" TEXT NOT NULL ON CONFLICT REPLACE DEFAULT '',
+        "position" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 0,
         "priority" INTEGER,
-        "remindersListID" INTEGER NOT NULL,
-        "title" TEXT NOT NULL,
-
-        FOREIGN KEY("remindersListID") REFERENCES "remindersLists"("id") ON DELETE CASCADE
+        "remindersListID" TEXT NOT NULL REFERENCES "remindersLists"("id") ON DELETE CASCADE,
+        "status" INTEGER NOT NULL DEFAULT 0,
+        "title" TEXT NOT NULL ON CONFLICT REPLACE DEFAULT ''
       ) STRICT
       """
     )
@@ -144,8 +201,7 @@ func appDatabase() throws -> any DatabaseWriter {
     try #sql(
       """
       CREATE TABLE "tags" (
-        "id" INTEGER PRIMARY KEY AUTOINCREMENT,
-        "title" TEXT NOT NULL COLLATE NOCASE UNIQUE
+        "title" TEXT COLLATE NOCASE PRIMARY KEY NOT NULL
       ) STRICT
       """
     )
@@ -153,200 +209,302 @@ func appDatabase() throws -> any DatabaseWriter {
     try #sql(
       """
       CREATE TABLE "remindersTags" (
-        "reminderID" INTEGER NOT NULL,
-        "tagID" INTEGER NOT NULL,
-
-        FOREIGN KEY("reminderID") REFERENCES "reminders"("id") ON DELETE CASCADE,
-        FOREIGN KEY("tagID") REFERENCES "tags"("id") ON DELETE CASCADE
+        "id" TEXT PRIMARY KEY NOT NULL ON CONFLICT REPLACE DEFAULT (uuid()),
+        "reminderID" TEXT NOT NULL REFERENCES "reminders"("id") ON DELETE CASCADE,
+        "tagID" TEXT NOT NULL REFERENCES "tags"("title") ON DELETE CASCADE ON UPDATE CASCADE
       ) STRICT
       """
     )
     .execute(db)
-  }
-  migrator.registerMigration("Add 'position' column to 'remindersLists'") { db in
     try #sql(
       """
-      ALTER TABLE "remindersLists"
-      ADD COLUMN "position" INTEGER NOT NULL DEFAULT 0
-      """
-    )
-    .execute(db)
-    try #sql(
-      """
-      CREATE TRIGGER "default_position_reminders_lists" 
-      AFTER INSERT ON "remindersLists"
-      FOR EACH ROW BEGIN
-        UPDATE "remindersLists"
-        SET "position" = (SELECT max("position") + 1 FROM "remindersLists")
-        WHERE "id" = NEW."id";
-      END
-      """
-    )
-    .execute(db)
-  }
-  migrator.registerMigration("Add 'position' column to 'reminders'") { db in
-    try #sql(
-      """
-      ALTER TABLE "reminders"
-      ADD COLUMN "position" INTEGER NOT NULL DEFAULT 0
-      """
-    )
-    .execute(db)
-    // Backfill position of reminders based on their completion status and due date.
-    try #sql(
-      """
-      WITH "reminderPositions" AS (
-        SELECT
-          "reminders"."id",
-          ROW_NUMBER() OVER (PARTITION BY "remindersListID" ORDER BY id) - 1 AS "position"
-        FROM "reminders"
-        ORDER BY NOT "isCompleted", "dueDate" DESC
+      CREATE VIRTUAL TABLE "reminderTexts" USING fts5(
+        "title",
+        "notes",
+        "tags",
+        tokenize = 'trigram'
       )
-      UPDATE "reminders"
-      SET "position" = "reminderPositions"."position"
-      FROM "reminderPositions"
-      WHERE "reminders"."id" = "reminderPositions"."id"
-      """
-    )
-    .execute(db)
-    try #sql(
-      """
-      CREATE TRIGGER "default_position_reminders" 
-      AFTER INSERT ON "reminders"
-      FOR EACH ROW BEGIN
-        UPDATE "reminders"
-        SET "position" = (SELECT max("position") + 1 FROM "reminders")
-        WHERE "id" = NEW."id";
-      END
       """
     )
     .execute(db)
   }
-  #if DEBUG && targetEnvironment(simulator)
-    if context != .test {
-      migrator.registerMigration("Seed sample data") { db in
-        try db.seedSampleData()
-      }
-    }
-  #endif
+
   try migrator.migrate(database)
+
+  try database.write { db in
+
+    try RemindersList.createTemporaryTrigger(
+      after: .insert { new in
+        RemindersList
+          .find(new.id)
+          .update { $0.position = RemindersList.select { ($0.position.max() ?? -1) + 1 } }
+      }
+    )
+    .execute(db)
+
+    try Reminder.createTemporaryTrigger(
+      after: .insert { new in
+        Reminder
+          .find(new.id)
+          .update { $0.position = Reminder.select { ($0.position.max() ?? -1) + 1 } }
+      }
+    )
+    .execute(db)
+
+    try RemindersList.createTemporaryTrigger(
+      after: .delete { _ in
+        Values($createDefaultRemindersList())
+      } when: { _ in
+        !RemindersList.exists()
+      }
+    )
+    .execute(db)
+
+    try Reminder.createTemporaryTrigger(
+      after: .insert { new in
+        ReminderText.insert {
+          ReminderText.Columns(
+            rowid: new.rowid,
+            title: new.title,
+            notes: new.notes.replace("\n", " "),
+            tags: ""
+          )
+        }
+      }
+    )
+    .execute(db)
+
+    try Reminder.createTemporaryTrigger(
+      after: .update {
+        ($0.title, $0.notes)
+      } forEachRow: { _, new in
+        ReminderText
+          .where { $0.rowid.eq(new.rowid) }
+          .update {
+            $0.title = new.title
+            $0.notes = new.notes.replace("\n", " ")
+          }
+      }
+    )
+    .execute(db)
+
+    try Reminder.createTemporaryTrigger(
+      after: .delete { old in
+        ReminderText
+          .where { $0.rowid.eq(old.rowid) }
+          .delete()
+      }
+    )
+    .execute(db)
+
+    func updateReminderTextTags(
+      for reminderID: some QueryExpression<Reminder.ID>
+    ) -> UpdateOf<ReminderText> {
+      ReminderText
+        .where { $0.rowid.eq(Reminder.find(reminderID).select(\.rowid)) }
+        .update {
+          $0.tags =
+            ReminderTag
+            .order(by: \.tagID)
+            .where { $0.reminderID.eq(reminderID) }
+            .join(Tag.all) { $0.tagID.eq($1.primaryKey) }
+            .select { ("#" + $1.title).groupConcat(" ") ?? "" }
+        }
+    }
+
+    try ReminderTag.createTemporaryTrigger(
+      after: .insert { new in
+        updateReminderTextTags(for: new.reminderID)
+      }
+    )
+    .execute(db)
+
+    try ReminderTag.createTemporaryTrigger(
+      after: .delete { old in
+        updateReminderTextTags(for: old.reminderID)
+      }
+    )
+    .execute(db)
+
+    try Reminder.createTemporaryTrigger(
+      after: .update {
+        $0.status
+      } forEachRow: { _, _ in
+        Values($handleReminderStatusUpdate())
+      } when: { _, new in
+        new.status.eq(#bind(.completing))
+      }
+    )
+    .execute(db)
+
+    if context != .live {
+      try db.seedSampleData()
+    }
+  }
 
   return database
 }
 
-private let logger = Logger(subsystem: "Reminders", category: "Database")
+nonisolated let reminderStatusMutex = Mutex<Task<Void, any Error>?>(nil)
+@DatabaseFunction
+nonisolated func handleReminderStatusUpdate() {
+  reminderStatusMutex.withLock {
+    $0?.cancel()
+    $0 = Task {
+      @Dependency(\.defaultDatabase) var database
+      @Dependency(\.continuousClock) var clock
+      try await clock.sleep(for: .seconds(5))
+      try await database.write { db in
+        try Reminder
+          .where { $0.status.eq(#bind(.completing)) }
+          .update { $0.status = .completed }
+          .execute(db)
+      }
+    }
+  }
+}
+
+@DatabaseFunction
+nonisolated func createDefaultRemindersList() {
+  Task {
+    @Dependency(\.defaultDatabase) var database
+    try await database.write { db in
+      try RemindersList.insert {
+        RemindersList.Draft(
+          color: RemindersList.defaultColor,
+          title: RemindersList.defaultTitle
+        )
+      }
+      .execute(db)
+    }
+  }
+}
+
+nonisolated private let logger = Logger(subsystem: "Reminders", category: "Database")
 
 #if DEBUG
   extension Database {
     func seedSampleData() throws {
+      @Dependency(\.date.now) var now
+      @Dependency(\.uuid) var uuid
+      let remindersListIDs = (0...2).map { _ in uuid() }
+      let reminderIDs = (0...10).map { _ in uuid() }
       try seed {
         RemindersList(
-          id: 1,
+          id: remindersListIDs[0],
           color: Color(red: 0x4a / 255, green: 0x99 / 255, blue: 0xef / 255),
           title: "Personal"
         )
         RemindersList(
-          id: 2,
+          id: remindersListIDs[1],
           color: Color(red: 0xed / 255, green: 0x89 / 255, blue: 0x35 / 255),
           title: "Family"
         )
         RemindersList(
-          id: 3,
+          id: remindersListIDs[2],
           color: Color(red: 0xb2 / 255, green: 0x5d / 255, blue: 0xd3 / 255),
           title: "Business"
         )
         Reminder(
-          id: 1,
+          id: reminderIDs[0],
           notes: "Milk\nEggs\nApples\nOatmeal\nSpinach",
-          remindersListID: 1,
+          remindersListID: remindersListIDs[0],
           title: "Groceries"
         )
         Reminder(
-          id: 2,
-          dueDate: Date().addingTimeInterval(-60 * 60 * 24 * 2),
+          id: reminderIDs[1],
+          dueDate: now.addingTimeInterval(-60 * 60 * 24 * 2),
           isFlagged: true,
-          remindersListID: 1,
+          remindersListID: remindersListIDs[0],
           title: "Haircut"
         )
         Reminder(
-          id: 3,
-          dueDate: Date(),
+          id: reminderIDs[2],
+          dueDate: now,
           notes: "Ask about diet",
           priority: .high,
-          remindersListID: 1,
+          remindersListID: remindersListIDs[0],
           title: "Doctor appointment"
         )
         Reminder(
-          id: 4,
-          dueDate: Date().addingTimeInterval(-60 * 60 * 24 * 190),
-          isCompleted: true,
-          remindersListID: 1,
+          id: reminderIDs[3],
+          dueDate: now.addingTimeInterval(-60 * 60 * 24 * 190),
+          remindersListID: remindersListIDs[0],
+          status: .completed,
           title: "Take a walk"
         )
         Reminder(
-          id: 5,
-          dueDate: Date(),
-          remindersListID: 1,
+          id: reminderIDs[4],
+          dueDate: now,
+          remindersListID: remindersListIDs[0],
           title: "Buy concert tickets"
         )
         Reminder(
-          id: 6,
-          dueDate: Date().addingTimeInterval(60 * 60 * 24 * 2),
+          id: reminderIDs[5],
+          dueDate: now.addingTimeInterval(60 * 60 * 24 * 2),
           isFlagged: true,
           priority: .high,
-          remindersListID: 2,
+          remindersListID: remindersListIDs[1],
           title: "Pick up kids from school"
         )
         Reminder(
-          id: 7,
-          dueDate: Date().addingTimeInterval(-60 * 60 * 24 * 2),
-          isCompleted: true,
+          id: reminderIDs[6],
+          dueDate: now.addingTimeInterval(-60 * 60 * 24 * 2),
           priority: .low,
-          remindersListID: 2,
+          remindersListID: remindersListIDs[1],
+          status: .completed,
           title: "Get laundry"
         )
         Reminder(
-          id: 8,
-          dueDate: Date().addingTimeInterval(60 * 60 * 24 * 4),
-          isCompleted: false,
+          id: reminderIDs[7],
+          dueDate: now.addingTimeInterval(60 * 60 * 24 * 4),
           priority: .high,
-          remindersListID: 2,
+          remindersListID: remindersListIDs[1],
+          status: .incomplete,
           title: "Take out trash"
         )
         Reminder(
-          id: 9,
-          dueDate: Date().addingTimeInterval(60 * 60 * 24 * 2),
+          id: reminderIDs[8],
+          dueDate: now.addingTimeInterval(60 * 60 * 24 * 2),
           notes: """
             Status of tax return
             Expenses for next year
             Changing payroll company
             """,
-          remindersListID: 3,
+          remindersListID: remindersListIDs[2],
           title: "Call accountant"
         )
         Reminder(
-          id: 10,
-          dueDate: Date().addingTimeInterval(-60 * 60 * 24 * 2),
-          isCompleted: true,
+          id: reminderIDs[9],
+          dueDate: now.addingTimeInterval(-60 * 60 * 24 * 2),
           priority: .medium,
-          remindersListID: 3,
+          remindersListID: remindersListIDs[2],
+          status: .completed,
           title: "Send weekly emails"
         )
-        Tag(id: 1, title: "car")
-        Tag(id: 2, title: "kids")
-        Tag(id: 3, title: "someday")
-        Tag(id: 4, title: "optional")
-        Tag(id: 5, title: "social")
-        Tag(id: 6, title: "night")
-        Tag(id: 7, title: "adulting")
-        ReminderTag(reminderID: 1, tagID: 3)
-        ReminderTag(reminderID: 1, tagID: 4)
-        ReminderTag(reminderID: 1, tagID: 7)
-        ReminderTag(reminderID: 2, tagID: 3)
-        ReminderTag(reminderID: 2, tagID: 4)
-        ReminderTag(reminderID: 3, tagID: 7)
-        ReminderTag(reminderID: 4, tagID: 1)
-        ReminderTag(reminderID: 4, tagID: 2)
+        Reminder(
+          id: reminderIDs[10],
+          dueDate: now.addingTimeInterval(60 * 60 * 24 * 2),
+          remindersListID: remindersListIDs[2],
+          status: .incomplete,
+          title: "Prepare for WWDC"
+        )
+        let tagIDs = ["car", "kids", "someday", "optional", "social", "night", "adulting"]
+        for tagID in tagIDs {
+          Tag(title: tagID)
+        }
+        ReminderTag.Draft(reminderID: reminderIDs[0], tagID: tagIDs[2])
+        ReminderTag.Draft(reminderID: reminderIDs[0], tagID: tagIDs[3])
+        ReminderTag.Draft(reminderID: reminderIDs[0], tagID: tagIDs[6])
+        ReminderTag.Draft(reminderID: reminderIDs[1], tagID: tagIDs[2])
+        ReminderTag.Draft(reminderID: reminderIDs[1], tagID: tagIDs[3])
+        ReminderTag.Draft(reminderID: reminderIDs[2], tagID: tagIDs[6])
+        ReminderTag.Draft(reminderID: reminderIDs[3], tagID: tagIDs[0])
+        ReminderTag.Draft(reminderID: reminderIDs[3], tagID: tagIDs[1])
+        ReminderTag.Draft(reminderID: reminderIDs[4], tagID: tagIDs[4])
+        ReminderTag.Draft(reminderID: reminderIDs[3], tagID: tagIDs[4])
+        ReminderTag.Draft(reminderID: reminderIDs[10], tagID: tagIDs[4])
+        ReminderTag.Draft(reminderID: reminderIDs[4], tagID: tagIDs[5])
       }
     }
   }

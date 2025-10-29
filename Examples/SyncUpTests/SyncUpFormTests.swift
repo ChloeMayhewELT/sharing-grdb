@@ -1,7 +1,6 @@
 import Dependencies
 import DependenciesTestSupport
 import Foundation
-import GRDB
 import StructuredQueries
 import Testing
 
@@ -9,8 +8,10 @@ import Testing
 
 @Suite(
   .dependencies {
-    $0.defaultDatabase = try! SyncUps.appDatabase()
-    try! $0.defaultDatabase.write { try $0.seedSyncUpFormTests() }
+    try $0.bootstrapDatabase()
+    try $0.defaultDatabase.write { db in
+      try db.seed()
+    }
     $0.uuid = .incrementing
   }
 )
@@ -56,38 +57,5 @@ struct SyncUpFormTests {
       try Attendee.where { $0.syncUpID.eq(existingSyncUp.id) }.fetchAll(db)
     }
     #expect(attendees.map(\.name) == ["Blob", "Blobby McBlob"])
-  }
-}
-
-extension Database {
-  fileprivate func seedSyncUpFormTests() throws {
-    try seed {
-      SyncUp(id: 1, seconds: 60, theme: .appOrange, title: "Design")
-      SyncUp(id: 2, seconds: 60 * 10, theme: .periwinkle, title: "Engineering")
-      SyncUp(id: 3, seconds: 60 * 30, theme: .poppy, title: "Product")
-
-      for name in ["Blob", "Blob Jr", "Blob Sr", "Blob Esq", "Blob III", "Blob I"] {
-        Attendee.Draft(name: name, syncUpID: 1)
-      }
-      for name in ["Blob", "Blob Jr"] {
-        Attendee.Draft(name: name, syncUpID: 2)
-      }
-      for name in ["Blob Sr", "Blob Jr"] {
-        Attendee.Draft(name: name, syncUpID: 3)
-      }
-
-      Meeting.Draft(
-        date: Date().addingTimeInterval(-60 * 60 * 24 * 7),
-        syncUpID: 1,
-        transcript: """
-          Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor \
-          incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud \
-          exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute \
-          irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla \
-          pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia \
-          deserunt mollit anim id est laborum.
-          """
-      )
-    }
   }
 }

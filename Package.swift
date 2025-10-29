@@ -1,9 +1,9 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 
 import PackageDescription
 
 let package = Package(
-  name: "sharing-grdb",
+  name: "sqlite-data",
   platforms: [
     .iOS(.v13),
     .macOS(.v10_15),
@@ -12,86 +12,87 @@ let package = Package(
   ],
   products: [
     .library(
-      name: "SharingGRDB",
-      targets: ["SharingGRDB"]
+      name: "SQLiteData",
+      targets: ["SQLiteData"]
     ),
     .library(
-      name: "SharingGRDBCore",
-      targets: ["SharingGRDBCore"]
+      name: "SQLiteDataTestSupport",
+      targets: ["SQLiteDataTestSupport"]
     ),
-    .library(
-      name: "StructuredQueriesGRDB",
-      targets: ["StructuredQueriesGRDB"]
-    ),
-    .library(
-      name: "StructuredQueriesGRDBCore",
-      targets: ["StructuredQueriesGRDBCore"]
-    ),
+  ],
+  traits: [
+    .trait(
+      name: "SQLiteDataTagged",
+      description: "Introduce SQLiteData conformances to the swift-tagged package."
+    )
   ],
   dependencies: [
+    .package(url: "https://github.com/apple/swift-collections", from: "1.0.0"),
+    .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.0.0"),
+    .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
     .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
-    .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.5.0"),
     .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.3.0"),
-    .package(url: "https://github.com/pointfreeco/swift-structured-queries", from: "0.2.0"),
+    .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.4"),
+    .package(
+      url: "https://github.com/pointfreeco/swift-structured-queries",
+      from: "0.24.0",
+      traits: [
+        .trait(name: "StructuredQueriesTagged", condition: .when(traits: ["SQLiteDataTagged"]))
+      ]
+    ),
+    .package(url: "https://github.com/pointfreeco/swift-tagged", from: "0.10.0"),
+    .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.5.0"),
   ],
   targets: [
-    .target(
-      name: "SharingGRDB",
-      dependencies: [
-        "SharingGRDBCore",
-        "StructuredQueriesGRDB",
-      ]
-    ),
-    .target(
-      name: "SharingGRDBCore",
-      dependencies: [
-        "StructuredQueriesGRDBCore",
-        .target(name: "GRDB"),
-        .product(name: "Sharing", package: "swift-sharing"),
-      ]
-    ),
-    .testTarget(
-      name: "SharingGRDBTests",
-      dependencies: [
-        "SharingGRDB",
-        .product(name: "DependenciesTestSupport", package: "swift-dependencies"),
-        .product(name: "StructuredQueries", package: "swift-structured-queries"),
-      ]
-    ),
-    .target(
-      name: "StructuredQueriesGRDBCore",
-      dependencies: [
-        .target(name: "GRDB"),
-        .product(name: "Dependencies", package: "swift-dependencies"),
-        .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
-        .product(name: "StructuredQueriesCore", package: "swift-structured-queries"),
-      ]
-    ),
-    .target(
-      name: "StructuredQueriesGRDB",
-      dependencies: [
-        "StructuredQueriesGRDBCore",
-        .product(name: "StructuredQueries", package: "swift-structured-queries"),
-      ]
-    ),
-    .testTarget(
-      name: "StructuredQueriesGRDBTests",
-      dependencies: [
-        "StructuredQueriesGRDB",
-        .product(name: "DependenciesTestSupport", package: "swift-dependencies"),
-        .product(name: "StructuredQueries", package: "swift-structured-queries"),
-      ]
-    ),
     .binaryTarget(
       name: "GRDB",
       path: "./Sources/GRDB.xcframework"
+    ),
+    .target(
+      name: "SQLiteData",
+      dependencies: [
+        .product(name: "ConcurrencyExtras", package: "swift-concurrency-extras"),
+        .product(name: "Dependencies", package: "swift-dependencies"),
+        .target(name: "GRDB"),
+        .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
+        .product(name: "OrderedCollections", package: "swift-collections"),
+        .product(name: "Sharing", package: "swift-sharing"),
+        .product(name: "StructuredQueriesSQLite", package: "swift-structured-queries"),
+        .product(
+          name: "Tagged",
+          package: "swift-tagged",
+          condition: .when(traits: ["SQLiteDataTagged"])
+        ),
+      ]
+    ),
+    .target(
+      name: "SQLiteDataTestSupport",
+      dependencies: [
+        "SQLiteData",
+        .product(name: "ConcurrencyExtras", package: "swift-concurrency-extras"),
+        .product(name: "CustomDump", package: "swift-custom-dump"),
+        .product(name: "Dependencies", package: "swift-dependencies"),
+        .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing"),
+        .product(name: "StructuredQueriesTestSupport", package: "swift-structured-queries"),
+      ]
+    ),
+    .testTarget(
+      name: "SQLiteDataTests",
+      dependencies: [
+        "SQLiteData",
+        "SQLiteDataTestSupport",
+        .product(name: "DependenciesTestSupport", package: "swift-dependencies"),
+        .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing"),
+        .product(name: "SnapshotTestingCustomDump", package: "swift-snapshot-testing"),
+        .product(name: "StructuredQueries", package: "swift-structured-queries"),
+      ]
     )
   ],
   swiftLanguageModes: [.v6]
 )
 
 let swiftSettings: [SwiftSetting] = [
-  .enableUpcomingFeature("MemberImportVisibility"),
+  .enableUpcomingFeature("MemberImportVisibility")
   // .unsafeFlags([
   //   "-Xfrontend",
   //   "-warn-long-function-bodies=50",

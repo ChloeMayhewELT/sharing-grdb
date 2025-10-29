@@ -1,19 +1,31 @@
-import SharingGRDB
+import CloudKit
+import SQLiteData
 import SwiftUI
+import SwiftUINavigation
+import TipKit
 
-struct RemindersListsView: View {
+@MainActor
+@Observable
+class RemindersListsModel {
+  @ObservationIgnored
   @FetchAll(
     RemindersList
       .group(by: \.id)
       .order(by: \.position)
       .leftJoin(Reminder.all) { $0.id.eq($1.remindersListID) && !$1.isCompleted }
+      .leftJoin(SyncMetadata.all) { $0.hasMetadata(in: $2) }
       .select {
-        ReminderListState.Columns(remindersCount: $1.id.count(), remindersList: $0)
+        ReminderListState.Columns(
+          remindersCount: $1.id.count(),
+          remindersList: $0,
+          share: $2.share
+        )
       },
     animation: .default
   )
-  private var remindersLists
+  var remindersLists
 
+  @ObservationIgnored
   @FetchAll(
     Tag
       .order(by: \.title)
@@ -22,197 +34,89 @@ struct RemindersListsView: View {
       .select { tag, _, _ in tag },
     animation: .default
   )
-  private var tags
+  var tags
 
+  @ObservationIgnored
   @FetchOne(
     Reminder.select {
       Stats.Columns(
         allCount: $0.count(filter: !$0.isCompleted),
-        flaggedCount: $0.count(filter: $0.isFlagged),
+        flaggedCount: $0.count(filter: $0.isFlagged && !$0.isCompleted),
         scheduledCount: $0.count(filter: $0.isScheduled),
         todayCount: $0.count(filter: $0.isToday)
       )
     }
   )
-  private var stats = Stats()
+  var stats = Stats()
 
-  @State private var destination: Destination?
-  @State private var remindersDetailType: RemindersDetailView.DetailType?
-  @State private var searchText = ""
+  var destination: Destination?
+  var searchRemindersModel = SearchRemindersModel()
+  var seedDatabaseTip: SeedDatabaseTip?
 
+  @ObservationIgnored
   @Dependency(\.defaultDatabase) private var database
 
-  @Selection
-  fileprivate struct ReminderListState: Identifiable {
-    var id: RemindersList.ID { remindersList.id }
-    var remindersCount: Int
-    var remindersList: RemindersList
+  func statTapped(_ detailType: RemindersDetailModel.DetailType) {
+    destination = .detail(RemindersDetailModel(detailType: detailType))
   }
 
-  @Selection
-  fileprivate struct Stats {
-    var allCount = 0
-    var flaggedCount = 0
-    var scheduledCount = 0
-    var todayCount = 0
+  func remindersListTapped(remindersList: RemindersList) {
+    destination = .detail(
+      RemindersDetailModel(
+        detailType: .remindersList(
+          remindersList
+        )
+      )
+    )
   }
 
-  enum Destination: Int, Identifiable {
-    case addList
-    case newReminder
-
-    var id: Int { rawValue }
+  func tagButtonTapped(tag: Tag) {
+    destination = .detail(
+      RemindersDetailModel(
+        detailType: .tags([tag])
+      )
+    )
   }
 
-  var body: some View {
-    List {
-      if searchText.isEmpty {
-        Section {
-          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 16) {
-            GridRow {
-              ReminderGridCell(
-                color: .blue,
-                count: stats.todayCount,
-                iconName: "calendar.circle.fill",
-                title: "Today"
-              ) {
-                remindersDetailType = .today
-              }
-              ReminderGridCell(
-                color: .red,
-                count: stats.scheduledCount,
-                iconName: "calendar.circle.fill",
-                title: "Scheduled"
-              ) {
-                remindersDetailType = .scheduled
-              }
-            }
-            GridRow {
-              ReminderGridCell(
-                color: .gray,
-                count: stats.allCount,
-                iconName: "tray.circle.fill",
-                title: "All"
-              ) {
-                remindersDetailType = .all
-              }
-              ReminderGridCell(
-                color: .orange,
-                count: stats.flaggedCount,
-                iconName: "flag.circle.fill",
-                title: "Flagged"
-              ) {
-                remindersDetailType = .flagged
-              }
-            }
-            GridRow {
-              ReminderGridCell(
-                color: .gray,
-                count: nil,
-                iconName: "checkmark.circle.fill",
-                title: "Completed"
-              ) {
-                remindersDetailType = .completed
-              }
-            }
-          }
-          .buttonStyle(.plain)
-          .listRowBackground(Color.clear)
-          .padding([.leading, .trailing], -20)
-        }
+  func deleteTags(atOffsets offsets: IndexSet) {
+    withErrorReporting {
+      let tagTitles = offsets.map { tags[$0].title }
+      try database.write { db in
+        try Tag
+          .where { $0.title.in(tagTitles) }
+          .delete()
+          .execute(db)
+      }
+    }
+  }
 
-        Section {
-          ForEach(remindersLists) { state in
-            NavigationLink {
-              RemindersDetailView(detailType: .list(state.remindersList))
-            } label: {
-              RemindersListRow(
-                remindersCount: state.remindersCount,
-                remindersList: state.remindersList
-              )
-            }
-          }
-          .onMove { indexSet, index in
-            move(from: indexSet, to: index)
-          }
-        } header: {
-          Text("My Lists")
-            .font(.system(.title2, design: .rounded, weight: .bold))
-            .foregroundStyle(Color(.label))
-            .textCase(nil)
-            .padding(.top, -16)
-            .padding([.leading, .trailing], 4)
-        }
-        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+  func onAppear() {
+    withErrorReporting {
+      try Tips.configure()
+    }
+    if remindersLists.isEmpty {
+      seedDatabaseTip = SeedDatabaseTip()
+    }
+  }
 
-        Section {
-          ForEach(tags) { tag in
-            NavigationLink {
-              RemindersDetailView(detailType: .tags([tag]))
-            } label: {
-              TagRow(tag: tag)
-            }
-          }
-        } header: {
-          Text("Tags")
-            .font(.system(.title2, design: .rounded, weight: .bold))
-            .foregroundStyle(Color(.label))
-            .textCase(nil)
-            .padding(.top, -16)
-            .padding([.leading, .trailing], 4)
-        }
-        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-      } else {
-        SearchRemindersView(searchText: searchText)
-      }
+  func newReminderButtonTapped() {
+    guard let remindersList = remindersLists.first?.remindersList
+    else {
+      reportIssue("There must be at least one list.")
+      return
     }
-    // NB: This explicit view identity works around a bug with 'List' view state not getting reset.
-    .id(searchText)
-    .listStyle(.insetGrouped)
-    .toolbar {
-      ToolbarItem(placement: .bottomBar) {
-        HStack {
-          Button {
-            destination = .newReminder
-          } label: {
-            HStack {
-              Image(systemName: "plus.circle.fill")
-              Text("New Reminder")
-            }
-            .bold()
-            .font(.title3)
-          }
-          Spacer()
-          Button {
-            destination = .addList
-          } label: {
-            Text("Add List")
-              .font(.title3)
-          }
-        }
-      }
-    }
-    .sheet(item: $destination) { destination in
-      switch destination {
-      case .addList:
-        NavigationStack {
-          RemindersListForm()
-            .navigationTitle("New List")
-        }
-        .presentationDetents([.medium])
-      case .newReminder:
-        if let remindersList = remindersLists.first?.remindersList {
-          NavigationStack {
-            ReminderFormView(remindersList: remindersList)
-              .navigationTitle("New Reminder")
-          }
-        }
-      }
-    }
-    .searchable(text: $searchText)
-    .navigationDestination(item: $remindersDetailType) { detailType in
-      RemindersDetailView(detailType: detailType)
-    }
+    destination = .reminderForm(
+      Reminder.Draft(remindersListID: remindersList.id),
+      remindersList: remindersList
+    )
+  }
+
+  func addListButtonTapped() {
+    destination = .remindersListForm(RemindersList.Draft())
+  }
+
+  func listDetailsButtonTapped(remindersList: RemindersList) {
+    destination = .remindersListForm(RemindersList.Draft(remindersList))
   }
 
   func move(from source: IndexSet, to destination: Int) {
@@ -234,6 +138,254 @@ struct RemindersListsView: View {
           }
           .execute(db)
       }
+    }
+  }
+
+  #if DEBUG
+    func seedDatabaseButtonTapped() {
+      withErrorReporting {
+        try database.write { db in
+          try db.seedSampleData()
+        }
+      }
+    }
+  #endif
+
+  @CasePathable
+  enum Destination {
+    case detail(RemindersDetailModel)
+    case reminderForm(Reminder.Draft, remindersList: RemindersList)
+    case remindersListForm(RemindersList.Draft)
+  }
+
+  @Selection
+  struct ReminderListState: Identifiable {
+    var id: RemindersList.ID { remindersList.id }
+    var remindersCount: Int
+    var remindersList: RemindersList
+    @Column(as: CKShare?.SystemFieldsRepresentation.self)
+    var share: CKShare?
+  }
+
+  @Selection
+  struct Stats {
+    var allCount = 0
+    var flaggedCount = 0
+    var scheduledCount = 0
+    var todayCount = 0
+  }
+
+  struct SeedDatabaseTip: Tip {
+    var title: Text {
+      Text("Seed Sample Data")
+    }
+    var message: Text? {
+      Text("Tap here to quickly populate the app with test data.")
+    }
+    var image: Image? {
+      Image(systemName: "leaf")
+    }
+  }
+}
+
+struct RemindersListsView: View {
+  @Bindable var model: RemindersListsModel
+  @Dependency(\.defaultSyncEngine) var syncEngine
+
+  var body: some View {
+    List {
+      if model.searchRemindersModel.isSearching {
+        SearchRemindersView(model: model.searchRemindersModel)
+      } else {
+        Section {
+          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 16) {
+            GridRow {
+              ReminderGridCell(
+                color: .blue,
+                count: model.stats.todayCount,
+                iconName: "calendar.circle.fill",
+                title: "Today"
+              ) {
+                model.statTapped(.today)
+              }
+              ReminderGridCell(
+                color: .red,
+                count: model.stats.scheduledCount,
+                iconName: "calendar.circle.fill",
+                title: "Scheduled"
+              ) {
+                model.statTapped(.scheduled)
+              }
+            }
+            GridRow {
+              ReminderGridCell(
+                color: .gray,
+                count: model.stats.allCount,
+                iconName: "tray.circle.fill",
+                title: "All"
+              ) {
+                model.statTapped(.all)
+              }
+              ReminderGridCell(
+                color: .orange,
+                count: model.stats.flaggedCount,
+                iconName: "flag.circle.fill",
+                title: "Flagged"
+              ) {
+                model.statTapped(.flagged)
+              }
+            }
+            GridRow {
+              ReminderGridCell(
+                color: .gray,
+                count: nil,
+                iconName: "checkmark.circle.fill",
+                title: "Completed"
+              ) {
+                model.statTapped(.completed)
+              }
+            }
+          }
+          .buttonStyle(.plain)
+          .listRowBackground(Color.clear)
+          .padding([.leading, .trailing], -20)
+        }
+
+        Section {
+          ForEach(model.remindersLists) { state in
+            Button {
+              model.remindersListTapped(remindersList: state.remindersList)
+            } label: {
+              RemindersListRow(
+                remindersCount: state.remindersCount,
+                remindersList: state.remindersList,
+                share: state.share
+              )
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.primary)
+          }
+          .onMove(perform: model.move(from:to:))
+        } header: {
+          HStack {
+            Text("My Lists")
+            if syncEngine.isSynchronizing {
+              ProgressView().id(UUID())
+            }
+          }
+          .font(.system(.title2, design: .rounded, weight: .bold))
+          .foregroundStyle(Color(.label))
+          .textCase(nil)
+          .padding(.top, -16)
+          .padding([.leading, .trailing], 4)
+        }
+        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+
+        Section {
+          ForEach(model.tags) { tag in
+            Button {
+              model.tagButtonTapped(tag: tag)
+            } label: {
+              TagRow(tag: tag)
+            }
+            .foregroundStyle(.primary)
+          }
+          .onDelete { offsets in
+            model.deleteTags(atOffsets: offsets)
+          }
+        } header: {
+          Text("Tags")
+            .font(.system(.title2, design: .rounded, weight: .bold))
+            .foregroundStyle(Color(.label))
+            .textCase(nil)
+            .padding(.top, -16)
+            .padding([.leading, .trailing], 4)
+        }
+        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+      }
+    }
+    .onAppear {
+      model.onAppear()
+    }
+    .listStyle(.insetGrouped)
+    .toolbar {
+      #if DEBUG
+        ToolbarItem(placement: .automatic) {
+          Menu {
+            Button {
+              model.seedDatabaseButtonTapped()
+            } label: {
+              Text("Seed data")
+              Image(systemName: "leaf")
+            }
+            Button {
+              if syncEngine.isRunning {
+                syncEngine.stop()
+              } else {
+                Task {
+                  await withErrorReporting {
+                    try await syncEngine.start()
+                  }
+                }
+              }
+            } label: {
+              Text("\(syncEngine.isRunning ? "Stop" : "Start") synchronizing")
+              Image(systemName: syncEngine.isRunning ? "stop" : "play")
+            }
+          } label: {
+            Image(systemName: "ellipsis.circle")
+          }
+          .popoverTip(model.seedDatabaseTip)
+        }
+      #endif
+      ToolbarItem(placement: .bottomBar) {
+        HStack {
+          Button {
+            model.newReminderButtonTapped()
+          } label: {
+            HStack {
+              Image(systemName: "plus.circle.fill")
+              Text("New Reminder")
+            }
+            .bold()
+            .font(.title3)
+          }
+          Spacer()
+          Button {
+            model.addListButtonTapped()
+          } label: {
+            Text("Add List")
+              .font(.title3)
+          }
+        }
+      }
+    }
+    .sheet(item: $model.destination.reminderForm, id: \.0.id) { reminder, remindersList in
+      NavigationStack {
+        ReminderFormView(reminder: reminder, remindersList: remindersList)
+          .navigationTitle("New Reminder")
+      }
+    }
+    .sheet(item: $model.destination.remindersListForm) { remindersList in
+      NavigationStack {
+        RemindersListForm(remindersList: remindersList)
+          .navigationTitle("New List")
+      }
+      .presentationDetents([.medium])
+    }
+    .searchable(
+      text: $model.searchRemindersModel.searchText,
+      tokens: $model.searchRemindersModel.searchTokens
+    ) { token in
+      switch token.kind {
+      case .near:
+        Text(token.rawValue)
+      case .tag:
+        Text("#\(token.rawValue)")
+      }
+    }
+    .navigationDestination(item: $model.destination.detail) { detailModel in
+      RemindersDetailView(model: detailModel)
     }
   }
 }
@@ -283,6 +435,6 @@ private struct ReminderGridCell: View {
     $0.defaultDatabase = try Reminders.appDatabase()
   }
   NavigationStack {
-    RemindersListsView()
+    RemindersListsView(model: RemindersListsModel())
   }
 }
