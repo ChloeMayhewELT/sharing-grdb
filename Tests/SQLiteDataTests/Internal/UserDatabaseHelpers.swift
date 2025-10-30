@@ -2,7 +2,7 @@ import SQLiteData
 
 extension UserDatabase {
   func userWrite<T: Sendable>(
-    _ updates: @Sendable (Database) throws -> T
+    _ updates: @escaping @Sendable (Database) throws -> T
   ) async throws -> T {
     try await write { db in
       try $_isSynchronizingChanges.withValue(false) {

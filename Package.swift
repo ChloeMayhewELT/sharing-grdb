@@ -19,6 +19,10 @@ let package = Package(
       name: "SQLiteDataTestSupport",
       targets: ["SQLiteDataTestSupport"]
     ),
+    .library(
+        name: "GRDB",
+        targets: ["GRDB"]
+    )
   ],
   traits: [
     .trait(

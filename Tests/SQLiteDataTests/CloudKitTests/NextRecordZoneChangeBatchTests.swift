@@ -116,8 +116,8 @@
             SyncMetadata(
               recordPrimaryKey: "1",
               recordType: RemindersList.tableName,
-              zoneName: syncEngine.defaultZone.zoneID.zoneName,
-              ownerName: syncEngine.defaultZone.zoneID.ownerName,
+              zoneName: self.syncEngine.defaultZone.zoneID.zoneName,
+              ownerName: self.syncEngine.defaultZone.zoneID.ownerName,
               userModificationTime: 0
             )
           }
